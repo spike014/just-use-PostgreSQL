@@ -32,10 +32,11 @@
 ## 原理概述
 
 - 缓存（UNLOGGED + TTL）：UNLOGGED 表跳过 WAL 写入，写入更快；缓存用 `expires_at` 控制 TTL，读时过滤过期数据，后台定期清理。
-- Pub/Sub（LISTEN/NOTIFY）：数据库内置轻量通知机制，适合“信号”，不保证持久与重放；示例里只通知 id，再回表取数据。
-- 队列（SKIP LOCKED）：worker 通过 `FOR UPDATE SKIP LOCKED` 领取任务，避免多 worker 重复处理；领取与自增 attempts 在同一语句完成。
+- Pub/Sub（LISTEN/NOTIFY）：数据库内置轻量通知机制（广播模式），适合作为“信号”；进阶方案可使用 **PGMQ** 实现可靠的**竞争消费者模式**。
+- 任务队列（SKIP LOCKED）：通过 `FOR UPDATE SKIP LOCKED` 领取任务，实现**竞争消费**；进阶方案推荐使用 **PGMQ** 扩展。
 - Sessions（JSONB + TTL）：session 直接存 JSONB，可用索引与条件查询；TTL 由 `expires_at` 控制。
 - 限流（upsert）：`INSERT ... ON CONFLICT DO UPDATE` 原子更新计数与窗口起点，避免并发竞争。
+
 
 ## 为什么可以这样做
 
