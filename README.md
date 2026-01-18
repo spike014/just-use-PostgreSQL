@@ -1,126 +1,43 @@
-# Drizzle ORM + Postgres（替代 Redis 用法）
+# Drizzle ORM + Postgres ( 用 `Postgres` 替代 `Redis` )
 
-这个目录是一个 TypeScript 示例，受文章 [I replaced Redis with PostgreSQL and it's faster](https://dev.to/polliog/i-replaced-redis-with-postgresql-and-its-faster-4942) 启发，使用 Drizzle ORM 复刻其中的“用 PostgreSQL 替换 Redis”方案。
+如果你不想多維護一個 `Redis` ，可以用 `PostgreSQL` 實現快取、隊列、 `Session` 和限流。這個專案受 `[I replaced Redis with PostgreSQL and it's faster](https://dev.to/polliog/i-replaced-redis-with-postgresql-and-its-faster-4942)` 啟發，使用 `Drizzle ORM` 提供了各種典型場景的實現範例。
 
-包含内容：
-- 缓存：UNLOGGED 表 + TTL
-- Pub/Sub：LISTEN/NOTIFY
-- 任务队列：SKIP LOCKED
-- Sessions：JSONB + TTL
-- 限流：单条 upsert 原子更新
+## 為什麼這麼做？
+- **省事**：少一個依賴組件，運維更簡單，備份、擴容、監控都更集中。
+- **一致性**：業務數據和快取/隊列寫在同一個資料庫交易裡，要麼全成功，要麼全失敗，不用擔心「消息發了但數據沒存上」的問題。
+- **省錢**：中小規模下直接複用資料庫資源，不需要額外購買或配置 `Redis` 集群。
 
-改进点：
-- NOTIFY 只发送 id 作为信号，消费者再回表读取完整数据，避免 payload 限制与丢失。
-- 关键写入/领取操作都保持单条 SQL，保证原子性。
+## 核心功能與原理
 
-## 详细文档（每个模块独立）
+| 功能 | 實現方式 | 特點 | 詳細文件 |
+| :--- | :--- | :--- | :--- |
+| **快取** | `UNLOGGED` 表 + `TTL` | **快**。不記錄日誌，崩潰會丟數據，適合純快取。 | `[docs/cache.md](docs/cache.md)` |
+| **Pub/Sub** | `LISTEN/NOTIFY` | **輕**。適合發信號。進階可用 `[docs/pubsub.md](docs/pubsub.md)` 了解 `PGMQ` 實現高可靠隊列。 | `[docs/pubsub.md](docs/pubsub.md)` |
+| **任務隊列** | `SKIP LOCKED` | **併發安全**。多進程搶任務不鎖表，不重複消費。 | `[docs/queue.md](docs/queue.md)` |
+| **Session** | `JSONB` + `TTL` | **靈活**。適合存複雜的 `Session` ，支持快速查詢。 | `[docs/sessions.md](docs/sessions.md)` |
+| **限流** | `UPSERT` 原子更新 | **準**。單條 `SQL` 完成「檢查+扣減」，無併發競態。 | `[docs/rate-limit.md](docs/rate-limit.md)` |
 
-- 缓存：`docs/cache.md`
-- Pub/Sub：`docs/pubsub.md`
-- 队列：`docs/queue.md`
-- Sessions：`docs/sessions.md`
-- 限流：`docs/rate-limit.md`
+## 快速上手
 
-每个文档都包含：
-- 原理与为什么可行
-- 与普通表的区别
-- 推荐维护策略
-- 监控与告警建议
-- 参数与策略建议
-- 压测与验收建议
+1. **初始化表**：
+   ```bash
+   psql "$DATABASE_URL" -f sql/001_init.sql
+   ```
+2. **安裝依賴**：
+   ```bash
+   npm i drizzle-orm pg
+   ```
+3. **執行演示**：
+   ```bash
+   node --loader tsx src/example.ts
+   ```
 
-## 原理概述
+## 適用與局限
 
-- 缓存（UNLOGGED + TTL）：UNLOGGED 表跳过 WAL 写入，写入更快；缓存用 `expires_at` 控制 TTL，读时过滤过期数据，后台定期清理。
-- Pub/Sub（LISTEN/NOTIFY）：数据库内置轻量通知机制（广播模式），适合作为“信号”；进阶方案可使用 **PGMQ** 实现可靠的**竞争消费者模式**。
-- 任务队列（SKIP LOCKED）：通过 `FOR UPDATE SKIP LOCKED` 领取任务，实现**竞争消费**；进阶方案推荐使用 **PGMQ** 扩展。
-- Sessions（JSONB + TTL）：session 直接存 JSONB，可用索引与条件查询；TTL 由 `expires_at` 控制。
-- 限流（upsert）：`INSERT ... ON CONFLICT DO UPDATE` 原子更新计数与窗口起点，避免并发竞争。
+- **推薦用**：中小規模系統、對開發效率和運維成本敏感、需要交易保證的場景。
+- **不推薦用**：每秒 `100,000` + 的超高併發、對延遲有極致要求 ( < `0.1` `ms` )、大量使用 `Redis` 特有資料結構 ( 如 `ZSET` 、 `Geo` ) 的情況。
 
-
-## 为什么可以这样做
-
-PostgreSQL 的这些能力并不是“模拟 Redis”，而是数据库本身提供的并发控制、
-通知机制和丰富的数据类型，让它可以覆盖部分 Redis 用途：
-
-- 并发控制：行级锁 + `SKIP LOCKED` 让多 worker 竞争同一队列表而不冲突。
-- 通知机制：`LISTEN/NOTIFY` 允许数据库直接向订阅者发事件信号。
-- 写入优化：UNLOGGED 表绕过 WAL，换取更快写入（但会丢失崩溃后的数据）。
-- 灵活数据结构：JSONB 支持半结构化存储与查询，适合 session、payload 等场景。
-- 原子 upsert：`ON CONFLICT` 在单条语句里完成“检查 + 更新”，避免并发竞态。
-
-核心原因是：这些操作都可以在同一事务、同一连接里完成，从而减少跨系统一致性问题。
-
-## 与“普通表”使用的区别
-
-- UNLOGGED 表：不写 WAL，速度更快，但崩溃后数据会被清空；普通表会崩溃恢复。
-- LISTEN/NOTIFY：不是表读写，而是数据库事件通道；普通表无法主动通知订阅者。
-- SKIP LOCKED：普通 `SELECT` 不会排队领取任务，必须结合锁机制才能避免重复消费。
-- JSONB：普通表更多是固定列；JSONB 支持灵活结构与 JSON 运算符查询。
-- 触发器 + pg_notify：插入表时自动发通知，普通表不具备“写入即广播”的行为。
-- 维护成本：这些表/机制通常需要额外的清理、索引和 vacuum 策略。
-
-## 优缺点
-
-优点：
-- 统一数据面：事务内可同时写业务数据、缓存失效、通知发布，减少一致性问题。
-- 运维更简单：少一个依赖、备份/监控/故障域更集中。
-- 成本可控：对中小系统通常比单独 Redis 更省。
-
-缺点/注意点：
-- 性能略慢：绝大多数操作在毫秒级，但高并发场景仍可能不及 Redis。
-- LISTEN/NOTIFY 非可靠消息：进程断开会漏消息，需以表作为“真相源”。
-- UNLOGGED 缓存会在崩溃后丢失；不适合必须持久的缓存数据。
-- 队列表会增长：需要定期清理与 vacuum/索引维护。
-- 极端吞吐下限流/队列可能成为热点，需要分片或保留 Redis。
-
-> 💡 **维护策略**：缓存表推荐使用 pg_cron 定期清理 + VACUUM，详见 [`docs/cache.md`](docs/cache.md#推荐维护策略)。
-
-## 适用场景
-
-- 中小规模系统、对一致性和简化运维要求高的项目。
-- 缓存/队列/限流逻辑相对简单，且可接受 0.1–1ms 的额外延迟。
-
-## 不适用场景
-
-- 需要 10 万+ ops/s 或更低延迟的系统。
-- 大量使用 Redis 特有结构（zset/stream/geospatial 等）。
-- 对可靠消息投递有严格保障要求的系统。
-
-## 使用方式
-
-1) 初始化表与触发器：
-
-```bash
-psql "$DATABASE_URL" -f sql/001_init.sql
-```
-
-2) 安装依赖（示例）：
-
-```bash
-npm i drizzle-orm pg
-npm i -D tsx typescript
-```
-
-3) 运行示例：
-
-```bash
-node --loader tsx src/example.ts
-```
-
-## 文件说明
-
-- src/db.ts：pg Pool + Drizzle 连接
-- src/schema.ts：表结构定义
-- src/cache.ts：缓存读写/清理
-- src/pubsub.ts：LISTEN/NOTIFY + 日志监听
-- src/queue.ts：入队/出队/完成/失败（SKIP LOCKED）
-- src/sessions.ts：session upsert/get/清理
-- src/rate-limit.ts：原子限流
-- src/example.ts：快速演示
-
-## 备注
-
-- cache 使用 UNLOGGED，崩溃后会丢失，仅用于可丢弃缓存。
-- LISTEN/NOTIFY 适合做信号，不适合当可靠消息队列。
-- SKIP LOCKED 允许多 worker 并发拉取且不重复处理。
+## 維護建議
+- **定期清理**：快取和 `Session` 表需要定期刪掉過期數據 ( 推薦用 `pg_cron` )，防止表無限變大。
+- **監控死行**：頻繁更新的隊列表需要關注 `VACUUM` 情況，建議調激進一點。
+- **詳細維護指南見各模組文件。**

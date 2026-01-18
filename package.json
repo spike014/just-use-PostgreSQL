@@ -1,0 +1,32 @@
+{
+  "name": "drizzle-pg-redis-replacement-sample",
+  "version": "1.0.0",
+  "description": "这个目录是一个 TypeScript 示例，受文章 [I replaced Redis with PostgreSQL and it's faster](https://dev.to/polliog/i-replaced-redis-with-postgresql-and-its-faster-4942) 启发，使用 Drizzle ORM 复刻其中的“用 PostgreSQL 替换 Redis”方案。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spike014/just-use-PostgreSQL.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/spike014/just-use-PostgreSQL/issues"
+  },
+  "homepage": "https://github.com/spike014/just-use-PostgreSQL#readme",
+  "dependencies": {
+    "drizzle-orm": "^0.45.1",
+    "pg": "^8.17.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.16.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
